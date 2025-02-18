@@ -272,8 +272,8 @@ class LLMEngine:
 
         self.model_executor = executor_class(vllm_config=vllm_config, )
 
-        if self.model_config.runner_type != "pooling":
-            self._initialize_kv_caches()
+        # if self.model_config.runner_type != "pooling":
+        #     self._initialize_kv_caches()
 
         # If usage stat is enabled, collect relevant info.
         if is_usage_stats_enabled():

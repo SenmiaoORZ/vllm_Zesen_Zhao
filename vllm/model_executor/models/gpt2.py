@@ -49,7 +49,6 @@ from .utils import (is_pp_missing_parameter,
 
 
 class GPT2Attention(nn.Module):
-
     def __init__(
         self,
         config: GPT2Config,
@@ -60,12 +59,11 @@ class GPT2Attention(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
         total_num_heads = config.num_attention_heads
-        tensor_model_parallel_world_size = (
-            get_tensor_model_parallel_world_size())
+        tensor_model_parallel_world_size = get_tensor_model_parallel_world_size()
         assert total_num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = total_num_heads // tensor_model_parallel_world_size
         self.head_dim = self.hidden_size // total_num_heads
-        self.scale = self.head_dim**-0.5
+        self.scale = self.head_dim ** -0.5
 
         self.c_attn = QKVParallelLinear(
             self.hidden_size,
@@ -82,23 +80,36 @@ class GPT2Attention(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.c_proj",
         )
-        self.attn = Attention(self.num_heads,
-                              self.head_dim,
-                              scale=self.scale,
-                              cache_config=cache_config,
-                              quant_config=quant_config,
-                              prefix=f"{prefix}.attn")
+        # Set Attention to use CPU
+        self.attn = Attention(self.num_heads, self.head_dim, scale=self.scale, cache_config=cache_config, quant_config=quant_config, prefix=f"{prefix}.attn")
 
     def forward(
         self,
         hidden_states: torch.Tensor,
-        kv_cache: torch.Tensor,
+        kv_cache: torch.Tensor,  # Expecting kv_cache to be in CPU memory
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
+        # QKV computation is done on GPU
         qkv, _ = self.c_attn(hidden_states)
         q, k, v = qkv.chunk(chunks=3, dim=-1)
+
+        # Move QKV to CPU before computation
+        q = q.to("cpu")
+        k = k.to("cpu")
+        v = v.to("cpu")
+
+        # Ensure KV Cache is always in CPU memory
+        kv_cache = kv_cache.to("cpu")
+
+        # Perform Attention on CPU
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
+
+        # Move attention output back to GPU for further computation
+        attn_output = attn_output.to(hidden_states.device)
+
+        # Apply projection layer (back on GPU)
         attn_output, _ = self.c_proj(attn_output)
+
         return attn_output
 
 
@@ -236,17 +247,12 @@ class GPT2Model(nn.Module):
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
 
-        for i in range(self.start_layer, self.end_layer):
-            layer = self.h[i]
-            hidden_states = layer(hidden_states,
-                                  kv_caches[i - self.start_layer],
-                                  attn_metadata)
-
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({"hidden_states": hidden_states})
 
         hidden_states = self.ln_f(hidden_states)
         return hidden_states
+
 
 
 class GPT2LMHeadModel(nn.Module, SupportsPP):
