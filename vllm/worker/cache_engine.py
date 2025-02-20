@@ -103,7 +103,7 @@ class CacheEngine:
             layer_kv_cache = torch.zeros(alloc_shape,
                                          dtype=self.dtype,
                                          pin_memory=pin_memory,
-                                         device=device)
+                                         device="cpu")
 
             # If we allocated with padding for alignment reasons truncate the
             # shape while preserving the aligned stride
